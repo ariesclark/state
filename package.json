@@ -1,0 +1,26 @@
+{
+  "name": "@ariesclark/state",
+  "version": "0.0.1",
+  "description": "A cool state container",
+  "keywords": [
+    "state",
+    "reactive"
+  ],
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc && typedoc --out docs src/index.ts",
+    "lint": "eslint --fix ./src/**/*.ts"
+  },
+  "author": "ariesclark",
+  "license": "MIT",
+  "devDependencies": {
+    "@ariesclark/eslint-config": "^1.0.3",
+    "eslint": "^8.12.0",
+    "typedoc": "^0.22.14",
+    "typescript": "^4.6.3"
+  },
+  "dependencies": {
+    "@ariesclark/utils": "^0.0.1",
+    "tslib": "^2.3.1"
+  }
+}
