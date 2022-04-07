@@ -1,12 +1,13 @@
 {
   "name": "@ariesclark/state",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "A cool state container",
   "keywords": [
     "state",
     "reactive"
   ],
   "main": "dist/index.js",
+  "files": ["dist"],
   "scripts": {
     "build": "tsc && typedoc --out docs src/index.ts",
     "lint": "eslint --fix ./src/**/*.ts"
