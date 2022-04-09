@@ -19,7 +19,11 @@ export interface ObservableSubscribeCallbackContext <T, K extends Keys<T>> {
 	/**
 	 * The key on the state object.
 	 */
-	path: K
+	path: K,
+	/**
+	 * The current state.
+	 */
+	state: T
 }
 
 /**
@@ -161,10 +165,12 @@ export const observe = <T extends ObservableObject> (
 		Object.defineProperty(store, path, {
 			get: () => values[path],
 			set: (value: T[Keys<T>]) => {
-				const context = objects.create<any>({
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				const context = objects.create<ObservableSubscribeCallbackContext<any, any>>({
 					path,
 					previousValue: values[path],
-					value
+					value,
+					state: store
 				});
 
 				values[path] = value as any;
