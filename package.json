@@ -1,6 +1,6 @@
 {
   "name": "@ariesclark/state",
-  "version": "0.0.4",
+  "version": "0.1.0",
   "description": "A cool state container",
   "keywords": [
     "state",
