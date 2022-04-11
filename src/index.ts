@@ -70,9 +70,25 @@ export class State <T> {
 	 */
 	public initialState: Readonly<T>;
 
+	/**
+	 * @internal
+	 */
 	private current: Current<T>;
+
+	/**
+	 * @internal
+	 */
 	private subscribers: Subscribers<T> = objects.create();
+
+	/**
+	 * @internal
+	 */
 	private dirtyKeys: Set<Keys<Current<T>>> = new Set();
+
+	/**
+	 * @internal
+	 */
+	private _dispatch: (() => void) | null = null;
 
 	/**
 	 * Create a new maintained state.
@@ -148,9 +164,6 @@ export class State <T> {
 			this.dispatch(key);
 		} */
 	}
-
-	// eslint-disable-next-line @typescript-eslint/member-ordering
-	private _dispatch: (() => void) | null = null;
 
 	private dispatch <K extends Keys<Current<T>>> (key: K): void {
 		this.dirtyKeys.add(key);
