@@ -1,38 +1,9 @@
-import { objects } from "@ariesclark/utils"
-import { Keys, OmitByType } from "@ariesclark/utils/dist/objects";
+import { objects } from "@ariesclark/utils";
+import { throttle } from "@ariesclark/utils/dist/functions";
+import { Flatten, Keys } from "@ariesclark/utils/dist/objects";
 
-/* eslint-disable @typescript-eslint/no-non-null-assertion */
-
-export type ObservableValue = string | number;
-export interface ObservableObject { [K: string]: ObservableValue }
-export interface DeepObservableObject { [K: string]: ObservableObject | ObservableValue }
-
-export interface ObservableSubscribeCallbackContext <T, K extends Keys<T>> {
+export interface SubscribeOptions {
 	/**
-	 * The current value.
-	 */
-	value: T[K],
-	/**
-	 * The previous value.
-	 */
-	previousValue: T[K],
-	/**
-	 * The key on the state object.
-	 */
-	path: K,
-	/**
-	 * The current state.
-	 */
-	state: T
-}
-
-/**
- * @param context {@link ObservableSubscribeCallbackContext}
- */
-export type ObservableSubscribeCallback <T, K extends Keys<T>> = (context: ObservableSubscribeCallbackContext<T, K>) => void;
-
-export interface ObservableSubscribeOptions {
-	/** 
 	 * Remove the subscriber when called.
 	 */
 	once?: boolean,
@@ -42,24 +13,25 @@ export interface ObservableSubscribeOptions {
 	immediate?: boolean
 }
 
-export interface ObservableSubscribeReturn {
-	/**
-	 * Remove this subscriber.
-	 */
-	unsubscribe: () => void
+type Subscribers <T> = {
+	[K in Keys<Current<T>> | typeof NullSubscriberKey]?:
+		Array<SubscribeCallback<T>>
+};
+
+export interface SubscribeCallbackContext <T> {
+	state: State<T>
 }
 
-export interface ComputeCallbackContext <T> {
-	/**
-	 * The current state.
-	 */
-	value: T
+export type SubscribeCallback <T> = (context: SubscribeCallbackContext<T>) => Promise<void> | void;
+
+export interface SubscribeReturn {
+	unsubscribe: () => void
 }
 
 /**
  * @param context {@link ComputeCallbackContext}
  */
-export type ComputeCallback <T, K extends Keys<T>> = (context: ComputeCallbackContext<T>) => T[K];
+export type ComputeCallback <T, K extends Keys<T>> = (context: SubscribeCallbackContext<T>) => T[K];
 
 export interface ComputeDeclaration <T, K extends Keys<T>> {
 	/**
@@ -68,199 +40,195 @@ export interface ComputeDeclaration <T, K extends Keys<T>> {
 	 */
 	execute: ComputeCallback<T, K>,
 	/**
-	 * An array of keys which, when they change, 
+	 * An array of keys which, when they change,
 	 * will execute the callback and update the computed value.
 	 */
 	dependencies: (Exclude<Keys<T>, K>)[]
 }
 
 /**
- * An object of keys which will be handled by their 
+ * An object of keys which will be handled by their
  * respective computation declaration.
  */
 export type ComputeMapDeclaration <T> = {
 	[K in Keys<T>]?: ComputeDeclaration<T, K>
 }
 
-const valueSymbol = Symbol("value");
-const subscribersSymbol = Symbol("subscribers");
-const nullSubscriberSymbol = Symbol("null subscriber");
-const computesSymbol = Symbol("computes");
+const NullSubscriberKey = Symbol("Null Subscriber");
 
-/**
- * The default subscriber options.
- * @see {@link ObservableSubscribeOptions}
- */
-export const ObservableSubscribeOptionsDefaults = Object.freeze(Object.seal<Required<ObservableSubscribeOptions>>({
+export const SubscribeOptionsDefaults = Object.freeze<Required<SubscribeOptions>>({
 	once: false,
 	immediate: false
-}));
+});
 
-/**
- * An observable object.
- */
-export interface Observable <T> {
-	/** The current state */
-	current: T,
-	[valueSymbol]: T,
-	[computesSymbol]: { [K in Keys<T>]?: ComputeDeclaration<T, K> },
-	[subscribersSymbol]: { [K in Keys<T> | typeof nullSubscriberSymbol]?: ObservableSubscribeCallback<T, Keys<T>>[] }
+type Current <T> = Flatten<T>;
+
+export class State <T> {
+
+	/**
+	 * The initial state.
+	 */
+	public initialState: Readonly<T>;
+
+	private current: Current<T>;
+	private subscribers: Subscribers<T> = objects.create();
+	private dirtyKeys: Set<Keys<Current<T>>> = new Set();
+
+	/**
+	 * Create a new maintained state.
+	 * @param initialState The initial state.
+	 */
+	public constructor (
+		initialState: Readonly<T>,
+		private computeMap: ComputeMapDeclaration<T> = {}
+	) {
+		this.initialState = Object.freeze(objects.create(initialState));
+		this.current = objects.flatten(objects.create(initialState));
+
+		for (const key of objects.keys(computeMap)) {
+			if (!computeMap[key]?.dependencies.length) throw new Error("Compute cannot have zero dependencies");
+
+			this.subscribe(computeMap[key]?.dependencies || [], () => {
+				const value = computeMap[key]?.execute({ state: this });
+				if (value) this.set(key as any, value as any);
+			}, { immediate: true });
+		}
+	}
+
+	/**
+	 * Get the current state object.
+	 */
+	public get (): Current<T>;
+
+	/**
+	 * Get the state value for the respective key.
+	 * @param key An object key.
+	 */
+	public get <K extends Keys<Current<T>>> (key: K): Current<T>[K];
+
+	public get (
+		...args: [
+			key: Keys<Current<T>>
+		] | []
+	): Current<T> | Current<T>[Keys<Current<T>>] {
+		if (args.length === 1) return this.current[args[0]];
+		return this.current;
+	}
+
+	/**
+	 * Update the current state, this merges the value into the current state.
+	 * @param value A partial state object.
+	 */
+	public set (value: Partial<Current<T>>): void;
+
+	/**
+	 * Update a specific key.
+	 * @param key An object key.
+	 * @param value The new value.
+	 */
+	public set <K extends Keys<Current<T>>> (key: K, value: Current<T>[K]): void
+
+	public set (
+		...args: [
+			key: Keys<Current<T>>,
+			value: Current<T>[Keys<Current<T>>]
+		] | [value: Partial<Current<T>>]
+	): void {
+		if (args.length === 2) {
+			const [key, value] = args;
+
+			this.current[key] = value;
+			this.dispatch(key);
+			return;
+		}
+
+		throw new Error("Not implemented");
+		/* for (const [key, value] of objects.entries(args[0])) {
+			this.current[key] = value;
+			this.dispatch(key);
+		} */
+	}
+
+	// eslint-disable-next-line @typescript-eslint/member-ordering
+	private _dispatch: (() => void) | null = null;
+
+	private dispatch <K extends Keys<Current<T>>> (key: K): void {
+		this.dirtyKeys.add(key);
+
+		(this._dispatch ??= throttle(() => {
+			console.debug("dispatch throttle");
+
+			const callbacks: Array<SubscribeCallback<T>> = [...this.subscribers[NullSubscriberKey] || []];
+			const keys = this.dirtyKeys.values();
+
+			Array.from(keys).forEach((dirtyKey) => {
+				callbacks.push(...(this.subscribers[dirtyKey] || []) as Array<SubscribeCallback<T>>);
+				this.dirtyKeys.delete(dirtyKey);
+			});
+
+			const context = objects.create({ state: this });
+			callbacks.forEach((callback) => callback(context));
+		}, 1))();
+	}
+
 	/**
 	 * Subscribe to state changes.
 	 * @param input A specific key, an array of keys or `null` for every key.
 	 * @param callback A function to listen to the changes.
-	 * @param options see {@link ObservableSubscribeOptions}
+	 * @param initialOptions see {@link SubscribeOptions}
 	 */
-	subscribe <
-		K extends Keys<OmitByType<T, object>>, 
-		I extends (K | Array<K> | null)
-	> (
-		input: I, 
-		callback: ObservableSubscribeCallback<T, K>, 
-		options?: ObservableSubscribeOptions
-	): ObservableSubscribeReturn,
+	public subscribe <K extends Keys<Current<T>>> (
+		input: (K | Array<K> | null),
+		callback: SubscribeCallback<T>,
+		initialOptions?: SubscribeOptions
+	): SubscribeReturn {
+		const options = objects.create({ ...SubscribeOptionsDefaults, ...initialOptions });
+		const keys: Array<Keys<Current<T>>> | null = ((Array.isArray(input) || input === null) ? input : [input]);
+
+		const initialCallback = callback.bind({});
+		if (options.once) callback = (...args) => {
+			this.unsubscribe(keys, callback);
+			void initialCallback(...args);
+		};
+
+		if (keys === null) {
+			this.subscribers[NullSubscriberKey] ??= [];
+			this.subscribers[NullSubscriberKey]?.push(callback);
+		} else {
+			for (const key of keys) {
+				this.subscribers[key] ??= [];
+				this.subscribers[key]?.push(callback);
+			}
+		}
+
+		if (options.immediate) keys?.forEach((key) => this.dispatch(key));
+
+		return objects.create({
+			unsubscribe: () => this.unsubscribe(keys, callback)
+		});
+	}
+
 	/**
 	 * Remove an existing subscriber, this will prevent it from receiving new changes.
 	 * @param input A specific key, an array of keys or `null` for every key.
 	 * @param callback The subscriber function to remove.
 	 */
-	unsubscribe: <
-		K extends Keys<OmitByType<T, object>>, 
-		I extends (K | Array<K> | null)> (
-		input: I, 
-		callback: ObservableSubscribeCallback<T, never>
-	) => void,
-	compute: (declaration: ComputeMapDeclaration<T>) => void,
-}
+	public unsubscribe <K extends Keys<Current<T>>> (
+		input: (K | Array<K> | null),
+		callback: SubscribeCallback<T>
+	): void {
+		const keys: Array<Keys<Current<T>>> | null = ((Array.isArray(input) || input === null) ? input : [input]);
 
-/**
- * A deeply nested observable object.
- * Nested objects are given their own respective observable.
- */
-export type DeepObservable <T> = Observable<{ [K in Keys<T>]: T[K] extends object ? Observable<T[K]> : T[K] }>; 
+		if (keys === null) {
+			const index = this.subscribers[NullSubscriberKey]?.indexOf(callback);
+			if (index) delete this.subscribers[NullSubscriberKey]?.[index];
+		} else {
+			for (const key of keys) {
+				if (!this.subscribers[key]) continue;
 
-/**
- * Create and observe an object.
- * @param initialObject The initial state.
- * @param computeDeclaration An object of keys which will be handled by their respective computation declaration.
- * @returns see {@link DeepObservable}
- */
-export const observe = <T extends ObservableObject> (
-	initialObject: T, 
-	computeDeclaration: ComputeMapDeclaration<T> = {}
-): DeepObservable<T> => {
-	const initialValues = objects.filter<T, OmitByType<T, object>>(initialObject, (key, value) => typeof value !== "object");
-	const values = objects.create<DeepObservable<T>[typeof valueSymbol]>(initialValues as any);
-	const computes = objects.create<Observable<T>[typeof computesSymbol]>();
-	const subscribers = objects.create<Observable<T>[typeof subscribersSymbol]>();
-
-	const store = objects.create<any>();
-
-	for (const path of objects.keys(initialObject)) {
-		if (typeof initialObject[path] === "object") {
-			store[path] = observe(initialObject[path] as any);
-			continue;
-		}
-
-		Object.defineProperty(store, path, {
-			get: () => values[path],
-			set: (value: T[Keys<T>]) => {
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				const context = objects.create<ObservableSubscribeCallbackContext<any, any>>({
-					path,
-					previousValue: values[path],
-					value,
-					state: store
-				});
-
-				values[path] = value as any;
-				
-				subscribers[path]?.forEach((callback) => callback(context));
-				subscribers[nullSubscriberSymbol]?.forEach((callback) => callback(context));
+				const index = this.subscribers[key]?.indexOf(callback);
+				if (index) delete this.subscribers[key]?.[index];
 			}
-		});
+		}
 	}
-
-	const unsubscribe: Observable<T>["unsubscribe"] = (input, callback) => {
-		const paths = ((Array.isArray(input) || input === null) ? input : [input]) as Keys<T>[] | null;
-
-		if (paths === null) {
-			const index = subscribers[nullSubscriberSymbol]!.indexOf(callback as any);
-			delete subscribers[nullSubscriberSymbol]![index];
-		} else {
-			for (const key of paths) {
-				if (!subscribers[key]) continue;
-				
-				const index = subscribers[key]!.indexOf(callback as any);
-				delete subscribers[key]![index];
-			}
-		}
-	};
-
-	const subscribe: Observable<T>["subscribe"] = (input, callback, initialOptions = {}) => {
-		const options = objects.create({ ...ObservableSubscribeOptionsDefaults, ...initialOptions });
-		const paths = ((Array.isArray(input) || input === null) ? input : [input]) as Keys<T>[] | null;
-
-		const initialCallback = callback.bind({});
-		if (options.once) callback = (...args) => {
-			unsubscribe(paths as any, callback);
-			initialCallback(...args);
-		};
-
-		if (paths === null) {
-			subscribers[nullSubscriberSymbol] ??= [];
-			subscribers[nullSubscriberSymbol]!.push(callback as any);
-		} else {
-			for (const key of paths) {
-				subscribers[key] ??= [];
-				subscribers[key]!.push(callback as any);
-			}
-		}
-
-		if (options.immediate) {
-			for (const path of paths === null 
-				? objects.keys(values) 
-				: paths
-			) {
-				callback(objects.create<any>({ 
-					path: path, 
-					value: values[path],
-					previousValue: values[path]
-				}));
-				
-			}
-		}
-
-		return { 
-			unsubscribe: () => unsubscribe(paths as any, callback)
-		};
-	};
-
-	const compute: Observable<T>["compute"] = (declarationMap) => {
-		for (const path of objects.keys(declarationMap)) {
-			if (computes[path]) {
-				// there was an existing compute for this path.
-				// clean up all traces of the previous one and replace it.
-				throw Error("Not implemented (compute key already exists)");
-			}
-
-			computes[path] = declarationMap[path];
-			subscribe(declarationMap[path]!.dependencies, () => {
-				store[path] = declarationMap[path]!.execute({ value: store }) as any;
-			}, { immediate: true });
-		}
-	};
-
-	if (objects.keys(computeDeclaration).length >= 1)
-		compute(computeDeclaration);
-
-	return Object.freeze(Object.assign<any, Observable<T>>(Object.create(null), {
-		current: store,
-		[valueSymbol]: values as T,
-		[subscribersSymbol]: subscribers,
-		[computesSymbol]: computes,
-		subscribe,
-		unsubscribe,
-		compute
-	}));
-};
+}
